@@ -21,6 +21,45 @@ learnjs.triggerEvent = function(name, args) {
   $('.view-container>*').trigger(name, args);
 };
 
+learnjs.sendDbRequest = function(req, retry) {
+  var promise = new $.Deferred();
+  req.on('error', function(error) {
+    if (error.code === 'CredentialsError') { 
+      learnjs.identity.then(function(identity) {
+        return identity.refresh().then(function() {
+          return retry(); 
+        }, function() {
+          promise.reject(error);
+        });
+      });
+    } else {
+      promise.reject(error); 
+    }
+  });
+  req.on('success', function(resp) {
+    promise.resolve(resp.data); 
+  });
+  req.send();
+  return promise;
+};
+
+learnjs.saveAnswer = function(problemId, answer) {
+  return learnjs.identity.then(function(identity) {
+    var db = new AWS.DynamoDB.DocumentClient();
+    var item = {
+      TableName: 'learnjs',
+      Item: {
+        userId: identity.id,
+        problemId: problemId,
+        answer: answer
+      }
+    };
+    return learnjs.sendDbRequest(db.put(item), function() {
+      return learnjs.saveAnswer(problemId, answer);
+    });
+  });
+};
+
 learnjs.template = function(name) {
   return $('.templates .' + name).clone();
 };
@@ -39,13 +78,13 @@ learnjs.buildCorrectFlash = function (problemNum) {
 
 learnjs.problemView = function(data) {
   var problemNumber = parseInt(data, 10);
-  var view = $('.templates .problem-view').clone();
-  var problemData = learnjs.problems[problemNumber - 1]; 
-  var resultFlash = view.find('.result'); 
+  var view = learnjs.template('problem-view');
+  var problemData = learnjs.problems[problemNumber - 1];
+  var resultFlash = view.find('.result');
+  var answer = view.find('.answer');
 
-  function checkAnswer() { 
-    var answer = view.find('.answer').val();
-    var test = problemData.code.replace('__', answer) + '; problem();';
+  function checkAnswer() {
+    var test = problemData.code.replace('__', answer.val()) + '; problem();';
     return eval(test);
   }
 
@@ -53,6 +92,7 @@ learnjs.problemView = function(data) {
     if (checkAnswer()) {
       var flashContent = learnjs.buildCorrectFlash(problemNumber);
       learnjs.flashElement(resultFlash, flashContent);
+      learnjs.saveAnswer(problemNumber, answer.val());
     } else {
       learnjs.flashElement(resultFlash, 'Incorrect!');
     }
@@ -68,7 +108,7 @@ learnjs.problemView = function(data) {
     });
   }
 
-  view.find('.check-btn').click(checkAnswerClick); 
+  view.find('.check-btn').click(checkAnswerClick);
   view.find('.title').text('Problem #' + problemNumber);
   learnjs.applyObject(problemData, view);
   return view;
